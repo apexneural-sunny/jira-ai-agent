@@ -66,42 +66,34 @@ Update `WEBHOOK_URL` in `.env` with the ngrok HTTPS URL, then restart the server
 
 Send any of these as **text** or a **voice note** in Telegram.
 
+**Supported issue types:** `Task` · `Bug` · `Story` · `Epic` · `Subtask`
+**Supported priorities:** `Highest` · `High` · `Medium` · `Low` · `Lowest`
+
+---
+
 ### Create a Task
 
 ```
 Create a task for fixing the login bug
-Create a story for user profile page
+Create a story for the user profile page
 Add a bug for payment gateway timeout
-Create high priority task: migrate database to PostgreSQL
-Create a task titled "Update dashboard UI" with 3 story points
-Create a bug assigned to John with high priority
+Create an urgent task: migrate database to PostgreSQL
+Create a high priority bug assigned to John
+Create a story with description "allow users to reset password"
 ```
-
-**Supported issue types:** `Task` · `Bug` · `Story` · `Epic`
-**Supported priorities:** `Low` · `Medium` · `High` · `Critical`
 
 ---
 
-### List Tasks
+### Update a Task
 
 ```
-Show my tasks
-List my tasks
-Show all tasks
-List tasks assigned to Sarah
-Show tasks for John
-Show backlog tasks
-List in-progress tasks
-Show tasks in review
-List in-progress tasks for John
-Show backlog tasks assigned to Sarah
+Update SCRUM-12 summary: Refactor auth module
+Update SCRUM-5 description: needs more details
+Rename SCRUM-8 to Fix login bug
+Edit SCRUM-3 description: updated details here
 ```
 
-**Supported status filters:** `Backlog` · `To Do` · `In Progress` · `In Review` · `Done`
-
-> **Note:** "Show my tasks" returns tasks **created by you**. "List tasks assigned to Sarah" returns tasks **assigned to** that person.
-
-> **Backlog** = issues not yet assigned to any sprint (`sprint is EMPTY`).
+> Use a colon (`:`) to separate the field from the new value — this avoids ambiguity with status changes.
 
 ---
 
@@ -110,13 +102,38 @@ Show backlog tasks assigned to Sarah
 ```
 Assign SCRUM-12 to John
 Assign SCRUM-5 to Sarah
+Give SCRUM-9 to Mike
 ```
 
 > Assignee is matched by name — partial names work (e.g. "John" matches "John Smith").
 
 ---
 
-### Update Task Status
+### Add a Comment
+
+```
+Add comment to SCRUM-12: Looks good, ready for review
+Comment on SCRUM-5: Blocked waiting for design assets
+Add a note to SCRUM-9: Fixed in latest build
+Leave a comment on SCRUM-3: Will review tomorrow
+```
+
+---
+
+### Change Priority
+
+```
+Set SCRUM-12 to High priority
+Mark SCRUM-5 as urgent
+Change priority of SCRUM-8 to Lowest
+Make SCRUM-3 high priority
+```
+
+**Priority levels:** `Highest` · `High` · `Medium` · `Low` · `Lowest`
+
+---
+
+### Change Status
 
 ```
 Move SCRUM-12 to In Progress
@@ -124,9 +141,29 @@ Mark SCRUM-8 as Done
 Set SCRUM-3 to In Review
 Move SCRUM-15 to To Do
 Close SCRUM-7
+Reopen SCRUM-4
 ```
 
 > Status names are fuzzy-matched against available Jira transitions, so variations like "in progress", "done", "review" all work.
+
+---
+
+### Search / List Tasks
+
+```
+Show my tasks
+List tasks assigned to Sarah
+Show high priority bugs
+Find all in-progress stories
+List tasks created this week
+Show open tasks for John
+Find all critical bugs in the SCRUM project
+Show tasks due next Friday
+```
+
+**Supported status filters:** `Backlog` · `To Do` · `In Progress` · `In Review` · `Done`
+
+> **Backlog** = issues not yet assigned to any sprint (`sprint is EMPTY`).
 
 ---
 
@@ -135,9 +172,30 @@ Close SCRUM-7
 ```
 Delete SCRUM-5
 Remove SCRUM-12
+Trash SCRUM-9
 ```
 
-> **Warning:** Deletion is permanent and cannot be undone.
+> **Warning:** Deletion is permanent and cannot be undone. The bot will ask for the issue key if not provided.
+
+---
+
+### Unrelated Input
+
+Any non-Jira question (weather, jokes, general knowledge, etc.) will be declined:
+> "I'm sorry, I can only help with Jira-related tasks."
+
+---
+
+### Coming Soon
+
+The following actions are parsed but not yet fully implemented:
+
+| Action | Example |
+|---|---|
+| Analytics | "Show project velocity", "Give me a summary of SCRUM" |
+| Bulk operations | "Mark all John's tasks as Done", "Reassign all open bugs to Sarah" |
+| Notifications | "Notify me when SCRUM-12 changes status" |
+| Automation | "When a bug is created, assign it to John" |
 
 ---
 
@@ -160,19 +218,21 @@ Each user is limited to **10 requests per minute**. Exceeding this returns:
 ## Project Structure
 
 ```
-automation/
+jira-ai-agent/
 ├── main.py                  # FastAPI app, lifespan, /webhook, /health
 ├── config.py                # Environment variable loading
 ├── requirements.txt
 ├── .env                     # Secrets (never commit)
+├── .env.example             # Template for environment variables
 ├── .gitignore
 ├── CLAUDE.md                # Claude Code instructions
 └── modules/
     ├── bot.py               # Telegram Application builder
     ├── handler.py           # handle_voice(), handle_text(), _dispatch()
     ├── intent.py            # GPT-4o-mini intent parsing → IntentResult
-    ├── models.py            # Pydantic models (IntentResult)
-    ├── jira_client.py       # Jira API: create / assign / delete / list / update_status
+    ├── models.py            # Pydantic models (IntentResult, SearchFilters, …)
+    ├── jira_client.py       # Jira API: create / update / assign / comment /
+    │                        #           priority / status / search / delete
     ├── transcriber.py       # OpenAI Whisper transcription
     ├── logger.py            # aiosqlite event logging
     ├── rate_limit.py        # Sliding window rate limiter (10 req/min)

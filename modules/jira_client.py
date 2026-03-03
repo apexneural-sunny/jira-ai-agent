@@ -7,7 +7,7 @@ import logging
 from jira import JIRA
 
 import config
-from modules.models import IntentResult
+from modules.models import IntentResult, SearchFilters
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +22,11 @@ def _get_client() -> JIRA:
 def _create_sync(intent: IntentResult) -> str:
     """Synchronous Jira issue creation (run via asyncio.to_thread)."""
     jira = _get_client()
+    project_key = intent.project or config.JIRA_PROJECT_KEY
 
     fields: dict = {
-        "project": {"key": config.JIRA_PROJECT_KEY},
-        "summary": intent.title,
+        "project": {"key": project_key},
+        "summary": intent.summary,
         "issuetype": {"name": intent.issue_type},
         "priority": {"name": intent.priority or "Medium"},
     }
@@ -36,13 +37,13 @@ def _create_sync(intent: IntentResult) -> str:
 
     issue = jira.create_issue(fields=fields)
 
-    if intent.assignee:
+    if intent.assignee_name:
         try:
-            users = jira.search_users(query=intent.assignee)
+            users = jira.search_users(query=intent.assignee_name)
             if users:
                 jira.assign_issue(issue, users[0].accountId)
         except Exception as e:
-            logger.warning("Could not assign '%s': %s", intent.assignee, e)
+            logger.warning("Could not assign '%s': %s", intent.assignee_name, e)
 
     return issue.key
 
@@ -88,26 +89,42 @@ async def delete_jira_task(issue_key: str) -> None:
         raise
 
 
-def _list_sync(assignee_name: str | None, status_filter: str | None) -> list[dict]:
+def _search_sync(filters: SearchFilters | None, project_key: str) -> list[dict]:
     jira = _get_client()
-    conditions = [f"project = {config.JIRA_PROJECT_KEY}"]
+    conditions = [f"project = {project_key}"]
 
-    if status_filter and status_filter.lower() == "backlog":
-        # Jira backlog = issues not yet assigned to any sprint
-        conditions.append("sprint is EMPTY")
-        conditions.append("status != Done")
-    elif status_filter:
-        conditions.append(f'status = "{status_filter}"')
+    if filters:
+        if filters.status and filters.status.lower() == "backlog":
+            conditions.append("sprint is EMPTY")
+            conditions.append("status != Done")
+        elif filters.status:
+            conditions.append(f'status = "{filters.status}"')
+        else:
+            conditions.append("status != Done")
+
+        if filters.assignee:
+            if filters.assignee.lower() == "me":
+                my_account_id = jira.myself()["accountId"]
+                conditions.append(f"assignee = '{my_account_id}'")
+            else:
+                users = jira.search_users(query=filters.assignee)
+                if not users:
+                    raise ValueError(f"No Jira user found matching '{filters.assignee}'")
+                conditions.append(f"assignee = '{users[0].accountId}'")
+
+        if filters.priority:
+            conditions.append(f'priority = "{filters.priority}"')
+
+        if filters.issue_type:
+            conditions.append(f'issuetype = "{filters.issue_type}"')
+
+        if filters.created_after:
+            conditions.append(f'created >= "{filters.created_after}"')
+
+        if filters.due_before:
+            conditions.append(f'due <= "{filters.due_before}"')
     else:
         conditions.append("status != Done")
-
-    if assignee_name:
-        users = jira.search_users(query=assignee_name)
-        if not users:
-            raise ValueError(f"No Jira user found matching '{assignee_name}'")
-        conditions.append(f"assignee = '{users[0].accountId}'")
-    else:
-        # Resolve the authenticated user's account ID explicitly — more reliable than currentUser()
         my_account_id = jira.myself()["accountId"]
         conditions.append(f"reporter = '{my_account_id}'")
 
@@ -125,15 +142,15 @@ def _list_sync(assignee_name: str | None, status_filter: str | None) -> list[dic
     ]
 
 
-async def list_jira_tasks(
-    assignee_name: str | None = None,
-    status_filter: str | None = None,
+async def search_jira_tasks(
+    filters: SearchFilters | None = None,
+    project_key: str | None = None,
 ) -> list[dict]:
-    """Return up to 10 tasks, optionally filtered by assignee name and/or status."""
+    """Return up to 10 tasks matching the given filters."""
     try:
-        return await asyncio.to_thread(_list_sync, assignee_name, status_filter)
+        return await asyncio.to_thread(_search_sync, filters, project_key or config.JIRA_PROJECT_KEY)
     except Exception as e:
-        logger.error("list_jira_tasks failed: %s", e)
+        logger.error("search_jira_tasks failed: %s", e)
         raise
 
 
@@ -142,12 +159,10 @@ def _update_status_sync(issue_key: str, target_status: str) -> str:
     jira = _get_client()
     transitions = jira.transitions(issue_key)
     names = [t["name"] for t in transitions]
-    # Exact match first (case-insensitive)
     for t in transitions:
         if t["name"].lower() == target_status.lower():
             jira.transition_issue(issue_key, t["id"])
             return t["name"]
-    # Fuzzy fallback
     result = fz_process.extractOne(target_status, names, scorer=fuzz.WRatio, score_cutoff=60)
     if result:
         matched_name, _score, idx = result
@@ -162,4 +177,54 @@ async def update_jira_status(issue_key: str, target_status: str) -> str:
         return await asyncio.to_thread(_update_status_sync, issue_key, target_status)
     except Exception as e:
         logger.error("update_jira_status failed: %s", e)
+        raise
+
+
+def _add_comment_sync(issue_key: str, comment_text: str) -> None:
+    jira = _get_client()
+    jira.add_comment(issue_key, comment_text)
+
+
+async def add_jira_comment(issue_key: str, comment_text: str) -> None:
+    """Add a comment to an existing Jira issue."""
+    try:
+        await asyncio.to_thread(_add_comment_sync, issue_key, comment_text)
+    except Exception as e:
+        logger.error("add_jira_comment failed: %s", e)
+        raise
+
+
+def _change_priority_sync(issue_key: str, priority: str) -> None:
+    jira = _get_client()
+    jira.issue(issue_key).update(fields={"priority": {"name": priority}})
+
+
+async def change_jira_priority(issue_key: str, priority: str) -> None:
+    """Update the priority of an existing Jira issue."""
+    try:
+        await asyncio.to_thread(_change_priority_sync, issue_key, priority)
+    except Exception as e:
+        logger.error("change_jira_priority failed: %s", e)
+        raise
+
+
+def _update_task_sync(intent: IntentResult) -> None:
+    jira = _get_client()
+    fields: dict = {}
+    if intent.summary:
+        fields["summary"] = intent.summary
+    if intent.description:
+        fields["description"] = intent.description
+    if intent.priority is not None:
+        fields["priority"] = {"name": intent.priority}
+    if fields:
+        jira.issue(intent.issue_key).update(fields=fields)
+
+
+async def update_jira_task(intent: IntentResult) -> None:
+    """Update fields on an existing Jira issue."""
+    try:
+        await asyncio.to_thread(_update_task_sync, intent)
+    except Exception as e:
+        logger.error("update_jira_task failed: %s", e)
         raise
