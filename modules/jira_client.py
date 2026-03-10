@@ -77,7 +77,8 @@ async def assign_jira_task(issue_key: str, assignee_name: str) -> str:
 
 def _delete_sync(issue_key: str) -> None:
     jira = _get_client()
-    jira.delete_issue(issue_key)
+    issue = jira.issue(issue_key)
+    issue.delete()
 
 
 async def delete_jira_task(issue_key: str) -> None:
